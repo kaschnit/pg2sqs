@@ -20,8 +20,8 @@ type Sender interface {
 }
 
 type BatchOpts struct {
-	// Max concurrent message sends.
-	Concurrency int
+	// Number of workers sending messages.
+	Workers int
 	// Max number of messages per batch send.
 	// This must be at least 1 and can be no higher than 10 (max allowed by AWS SQS).
 	MaxMessages int
@@ -32,7 +32,7 @@ type BatchOpts struct {
 
 // defaultBatchOpts are the default [BatchOpts].
 var defaultBatchOpts = BatchOpts{
-	Concurrency:   10,
+	Workers:       10,
 	MaxMessages:   1, // No batching by default - request per message
 	FlushInterval: 0, // No waiting by default - requests immediately flushed
 }
@@ -40,13 +40,13 @@ var defaultBatchOpts = BatchOpts{
 // BatchOptsFunc is a function to configure [BatchOpts].
 type BatchOptsFunc func(*BatchOpts)
 
-// WithConcurrency configures [BatchOpts.Concurrency],
-func WithConcurrency(concurrency int) BatchOptsFunc {
+// WithWorkers configures [BatchOpts.Workers],
+func WithWorkers(workers int) BatchOptsFunc {
 	// Cannot be below 1 - nonsense value.
-	concurrency = max(1, concurrency)
+	workers = max(1, workers)
 
 	return func(opts *BatchOpts) {
-		opts.Concurrency = concurrency
+		opts.Workers = workers
 	}
 }
 
