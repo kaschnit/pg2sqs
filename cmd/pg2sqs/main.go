@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kaschnit/pg2sqs/internal/checkpoint"
 	"github.com/kaschnit/pg2sqs/internal/engine"
 	"github.com/kaschnit/pg2sqs/internal/publish"
@@ -86,6 +87,12 @@ func main() {
 		"Max messages published per SQS SendMessage/SendMessageBatch request")
 	cmd.Flags().Duration("sqs.publishing.flush_interval", 1*time.Second,
 		"SQS batch publishing flush interval")
+	// Postgres
+	cmd.Flags().String("pg.connection.user", "", "Postgres user")
+	cmd.Flags().String("pg.connection.password", "", "Postgres password")
+	cmd.Flags().String("pg.connection.host", "", "Postgres host")
+	cmd.Flags().Int("pg.connection.port", 5432, "Postgres port")
+	cmd.Flags().String("pg.connection.database", "", "Postgres database")
 
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)
@@ -103,14 +110,22 @@ func run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
+	pgConnection, err := pgconn.Connect(context.Background(), cfg.PG.Connection.ConnectionString())
+	if err != nil {
+		return fmt.Errorf("failed to connect to postgres: %w", err)
+	}
+
+	stream := replication.NewStream(pgConnection)
+
 	publisher := publish.NewBatcher(sqs.NewFromConfig(awsCfg), cfg.SQS.Queue.QueueURL,
 		publish.WithWorkers(cfg.SQS.Publishing.Workers),
 		publish.WithFlushInterval(cfg.SQS.Publishing.FlushInterval),
 		publish.WithMaxMessages(cfg.SQS.Publishing.MaxMessages))
 
-	pipeline := engine.NewPipeline(replication.NewStream(), checkpoint.NewTracker(), publisher)
-
+	pipeline := engine.NewPipeline(stream, checkpoint.NewTracker(), publisher)
 	pipeline.Start(ctx)
+
+	<-ctx.Done()
 
 	return nil
 }

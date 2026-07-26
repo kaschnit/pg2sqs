@@ -92,7 +92,7 @@ func NewBatcher(sender Sender, queueURL string, optFns ...BatchOptsFunc) *Batche
 	}
 }
 
-func (batcher *Batcher) Subscribe(ctx context.Context, changes <-chan event.Change) <-chan pglogrepl.LSN {
+func (batcher *Batcher) Start(ctx context.Context, changes <-chan event.Change) <-chan pglogrepl.LSN {
 	batches := batcher.batchingStep(ctx, changes)
 	completed := batcher.publishingStep(ctx, batches)
 	return completed
@@ -101,6 +101,8 @@ func (batcher *Batcher) Subscribe(ctx context.Context, changes <-chan event.Chan
 func (batcher *Batcher) batchingStep(ctx context.Context, changes <-chan event.Change) <-chan []event.Change {
 	batches := make(chan []event.Change, batcher.opts.Workers*2)
 	go func() {
+		defer close(batches)
+
 		changeBatch := make([]event.Change, 0, batcher.opts.MaxMessages)
 
 		timer := time.NewTimer(batcher.opts.FlushInterval)
@@ -180,7 +182,7 @@ func (batcher *Batcher) publishingStep(
 
 				for _, entry := range resp.Failed {
 					// TODO handle failed
-					panic("FAILED TO SEND: " + *entry.Id)
+					panic("TODO handle failed send: " + *entry.Id)
 				}
 
 				for _, entry := range resp.Successful {

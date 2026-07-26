@@ -27,15 +27,14 @@ func (iv *invalidValue[T]) Error() string {
 type Config struct {
 	Verbosity Verbosity `koanf:"verbosity"`
 	SQS       SQSConfig `koanf:"sqs"`
+	PG        PGConfig  `koanf:"pg"`
 }
 
 func (cfg *Config) Validate() error {
-	var errs error
-
-	if err := cfg.SQS.Validate(); err != nil {
-		errs = errors.Join(errs, err)
-	}
-
+	errs := errors.Join(
+		cfg.SQS.Validate(),
+		cfg.PG.Validate(),
+	)
 	if errs != nil {
 		return fmt.Errorf("%w: %w", errInvalidCfg, errs)
 	}
@@ -106,6 +105,71 @@ func (cfg *SQSPublishingConfig) Validate() error {
 	}
 
 	return errs
+}
+
+type PGConfig struct {
+	Connection PGConnectionConfig `koanf:"connection"`
+}
+
+func (cfg *PGConfig) Validate() error {
+	return errors.Join(
+		cfg.Connection.Validate(),
+	)
+}
+
+type PGConnectionConfig struct {
+	User     string `koanf:"user"`
+	Password string `koanf:"password"`
+	Host     string `koanf:"host"`
+	Port     int    `koanf:"port"`
+	Database string `koanf:"database"`
+}
+
+func (cfg *PGConnectionConfig) Validate() error {
+	var errs error
+
+	if cfg.User == "" {
+		errs = errors.Join(errs, &invalidValue[string]{
+			name: "user",
+			got:  cfg.User,
+			want: "a user to be provided",
+		})
+	}
+	if cfg.Password == "" {
+		errs = errors.Join(errs, &invalidValue[string]{
+			name: "password",
+			got:  cfg.Password,
+			want: "a password to be provided",
+		})
+	}
+	if cfg.Host == "" {
+		errs = errors.Join(errs, &invalidValue[string]{
+			name: "host",
+			got:  cfg.Host,
+			want: "a host to be provided",
+		})
+	}
+	if cfg.Port < 0 {
+		errs = errors.Join(errs, &invalidValue[int]{
+			name: "host",
+			got:  cfg.Port,
+			want: "a valid port",
+		})
+	}
+	if cfg.Database == "" {
+		errs = errors.Join(errs, &invalidValue[string]{
+			name: "database",
+			got:  cfg.Database,
+			want: "a database to be provided",
+		})
+	}
+
+	return errs
+}
+
+func (cfg *PGConnectionConfig) ConnectionString() string {
+	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?replication=database",
+		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
 }
 
 const envVarPrefix = "PG2SQS__"

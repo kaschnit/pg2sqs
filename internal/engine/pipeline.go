@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/kaschnit/pg2sqs/internal/checkpoint"
 	"github.com/kaschnit/pg2sqs/internal/event"
@@ -30,8 +31,8 @@ func (p *Pipeline) Start(ctx context.Context) {
 	trackedChanges := make(chan event.Change, 10000) // TODO configure buf size
 
 	// Track changes.
+	changes := p.stream.Start(ctx)
 	go func() {
-		changes := p.stream.Changes()
 		for {
 			select {
 			case <-ctx.Done():
@@ -44,15 +45,21 @@ func (p *Pipeline) Start(ctx context.Context) {
 	}()
 
 	// Send tracked changes.
+	sent := p.batcher.Start(ctx, trackedChanges)
 	go func() {
-		sent := p.batcher.Subscribe(ctx, trackedChanges)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case lsn := <-sent:
 				safeLSN := p.tracker.Ack(lsn)
-				p.stream.Flush(safeLSN)
+
+				// TODO - handle error?
+				if err := p.stream.Flush(ctx, safeLSN); err != nil {
+					slog.ErrorContext(ctx, "failed to flush LSN",
+						slog.Any("err", err),
+						slog.Int64("lsn", int64(safeLSN)))
+				}
 			}
 		}
 	}()

@@ -27,6 +27,9 @@ BUILD_DIR := $(CURDIR)/build
 IMG_DIR := $(BUILD_DIR)/image
 IMG_TAR_FILE := $(IMG_DIR)/pg2sqs.tar
 
+# Local Postgres
+PG_CONTAINER := pg2sqs-local
+
 # Helm
 CHART_DIR := $(CURDIR)/charts/pg2sqs
 
@@ -112,6 +115,21 @@ build: generate $(BUILD_DIR) ## Build manager binary.
 .PHONY: run
 run: generate ## Run the application.
 	$(GO) run $(CMD)
+
+.PHONY: pg-start
+pg-start: PG_IMAGE := postgres:15
+pg-start: PG_PORT := 5432
+pg-start: ## Start an ephemeral Postgres container.
+	docker run --rm --name $(PG_CONTAINER) \
+		-e POSTGRES_USER=postgres \
+		-e POSTGRES_PASSWORD=postgres \
+		-e POSTGRES_DB=postgres \
+		-p $(PG_PORT):5432 \
+		-d $(PG_IMAGE)
+
+.PHONY: pg-stop
+pg-stop: ## Stop the local Postgres container.
+	docker stop $(PG_CONTAINER) || true
 
 .PHONY: image
 image: PUSH := false
