@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"log/slog"
+	"sync"
 
 	"github.com/kaschnit/pg2sqs/internal/checkpoint"
 	"github.com/kaschnit/pg2sqs/internal/event"
@@ -26,32 +27,48 @@ func NewPipeline(stream *replication.Stream, tracker *checkpoint.Tracker, batche
 	}
 }
 
-// Start starts the pipeline
-func (p *Pipeline) Start(ctx context.Context) {
-	trackedChanges := make(chan event.Change, 10000) // TODO configure buf size
+// Run starts the pipeline
+func (p *Pipeline) Run(ctx context.Context) {
+	var wg sync.WaitGroup
 
 	// Track changes.
 	changes := p.stream.Start(ctx)
-	go func() {
+	trackedChanges := make(chan event.Change, 10000) // TODO configure buf size
+	wg.Go(func() {
+		defer close(trackedChanges)
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case change := <-changes:
+			case change, ok := <-changes:
+				if !ok {
+					return
+				}
+
 				p.tracker.Track(change.LSN)
-				trackedChanges <- change
+
+				select {
+				case <-ctx.Done():
+					return
+				case trackedChanges <- change:
+				}
 			}
 		}
-	}()
+	})
 
 	// Send tracked changes.
 	sent := p.batcher.Start(ctx, trackedChanges)
-	go func() {
+	wg.Go(func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case lsn := <-sent:
+			case lsn, ok := <-sent:
+				if !ok {
+					return
+				}
+
 				safeLSN := p.tracker.Ack(lsn)
 
 				// TODO - handle error?
@@ -62,5 +79,7 @@ func (p *Pipeline) Start(ctx context.Context) {
 				}
 			}
 		}
-	}()
+	})
+
+	wg.Wait()
 }

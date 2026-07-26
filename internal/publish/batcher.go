@@ -2,6 +2,7 @@ package publish
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -113,7 +114,12 @@ func (batcher *Batcher) batchingStep(ctx context.Context, changes <-chan event.C
 				return
 			}
 
-			batches <- changeBatch
+			select {
+			case <-ctx.Done():
+				return
+			case batches <- changeBatch:
+			}
+
 			changeBatch = make([]event.Change, 0, batcher.opts.MaxMessages)
 			stopTimer(timer)
 		}
@@ -148,9 +154,9 @@ func (batcher *Batcher) publishingStep(
 	ctx context.Context,
 	batches <-chan []event.Change,
 ) <-chan pglogrepl.LSN {
-	completed := make(chan pglogrepl.LSN, batcher.opts.Workers*2)
-	for range batcher.opts.Workers {
-		go func() {
+	sent := make(chan pglogrepl.LSN, batcher.opts.Workers*2)
+	worker := func() {
+		for {
 			select {
 			case <-ctx.Done():
 				return
@@ -191,12 +197,27 @@ func (batcher *Batcher) publishingStep(
 						panic("TODO handle error: " + err.Error())
 					}
 
-					completed <- lsn
+					select {
+					case <-ctx.Done():
+						return
+					case sent <- lsn:
+					}
 				}
 			}
-		}()
+		}
 	}
-	return completed
+
+	var wg sync.WaitGroup
+	for range batcher.opts.Workers {
+		wg.Go(worker)
+	}
+
+	go func() {
+		wg.Wait()
+		close(sent)
+	}()
+
+	return sent
 }
 
 func stopTimer(timer *time.Timer) {

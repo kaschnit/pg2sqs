@@ -123,9 +123,7 @@ func run(ctx context.Context, cfg Config) error {
 		publish.WithMaxMessages(cfg.SQS.Publishing.MaxMessages))
 
 	pipeline := engine.NewPipeline(stream, checkpoint.NewTracker(), publisher)
-	pipeline.Start(ctx)
-
-	<-ctx.Done()
+	pipeline.Run(ctx)
 
 	return nil
 }
