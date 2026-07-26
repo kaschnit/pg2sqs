@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/jackc/pglogrepl"
 	"github.com/kaschnit/pg2sqs/internal/event"
 )
@@ -92,5 +93,115 @@ func NewBatcher(sender Sender, queueURL string, optFns ...BatchOptsFunc) *Batche
 }
 
 func (batcher *Batcher) Subscribe(ctx context.Context, changes <-chan event.Change) <-chan pglogrepl.LSN {
-	panic("TODO")
+	batches := batcher.batchingStep(ctx, changes)
+	completed := batcher.publishingStep(ctx, batches)
+	return completed
+}
+
+func (batcher *Batcher) batchingStep(ctx context.Context, changes <-chan event.Change) <-chan []event.Change {
+	batches := make(chan []event.Change, batcher.opts.Workers*2)
+	go func() {
+		changeBatch := make([]event.Change, 0, batcher.opts.MaxMessages)
+
+		timer := time.NewTimer(batcher.opts.FlushInterval)
+		stopTimer(timer)
+
+		flush := func() {
+			if len(changeBatch) == 0 {
+				return
+			}
+
+			batches <- changeBatch
+			changeBatch = make([]event.Change, 0, batcher.opts.MaxMessages)
+			stopTimer(timer)
+		}
+		defer flush()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				flush()
+			case change, ok := <-changes:
+				if !ok {
+					return
+				}
+
+				changeBatch = append(changeBatch, change)
+				if len(changeBatch) >= batcher.opts.MaxMessages {
+					flush()
+				} else if len(changeBatch) == 1 {
+					stopTimer(timer)
+					timer.Reset(batcher.opts.FlushInterval)
+				}
+			}
+		}
+	}()
+
+	return batches
+}
+
+func (batcher *Batcher) publishingStep(
+	ctx context.Context,
+	batches <-chan []event.Change,
+) <-chan pglogrepl.LSN {
+	completed := make(chan pglogrepl.LSN, batcher.opts.Workers*2)
+	for range batcher.opts.Workers {
+		go func() {
+			select {
+			case <-ctx.Done():
+				return
+			case changeBatch, ok := <-batches:
+				if !ok {
+					return
+				}
+
+				req := &sqs.SendMessageBatchInput{
+					QueueUrl: &batcher.queueURL,
+					Entries:  make([]sqstypes.SendMessageBatchRequestEntry, 0, len(changeBatch)),
+				}
+				for _, change := range changeBatch {
+					body, err := change.Marshal()
+					if err != nil {
+						panic("TODO handle error: " + err.Error())
+					}
+
+					req.Entries = append(req.Entries, sqstypes.SendMessageBatchRequestEntry{
+						Id:          new(change.LSN.String()),
+						MessageBody: new(string(body)),
+					})
+				}
+
+				resp, err := batcher.sender.SendMessageBatch(ctx, req)
+				if err != nil {
+					panic("TODO handle error: " + err.Error())
+				}
+
+				for _, entry := range resp.Failed {
+					// TODO handle failed
+					panic("FAILED TO SEND: " + *entry.Id)
+				}
+
+				for _, entry := range resp.Successful {
+					lsn, err := pglogrepl.ParseLSN(*entry.Id)
+					if err != nil {
+						panic("TODO handle error: " + err.Error())
+					}
+
+					completed <- lsn
+				}
+			}
+		}()
+	}
+	return completed
+}
+
+func stopTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
 }
